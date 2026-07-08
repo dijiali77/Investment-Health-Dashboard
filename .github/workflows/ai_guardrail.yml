@@ -1,0 +1,3 @@
+# CI: Check commit for session_logs updates
+# This is a placeholder file. The actual workflow script will depend on the CI platform.
+# The core logic is to verify that if session_logs/ files are changed, _LATEST.md is also updated correctly.

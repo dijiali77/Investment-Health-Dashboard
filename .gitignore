@@ -1,0 +1,20 @@
+# === 1. 語言/框架標準忽略項（依專案技術棧調整）===
+node_modules/
+dist/
+build/
+__pycache__/
+.env
+.env.local
+
+# === 2. AI 工具本機專屬檔案（不可共用，也不該進 git）===
+CLAUDE.local.md              # Claude Code 個人層記憶，僅限本機
+.cursor/cache/                # Cursor 本機快取（非 rules，rules 要留著）
+
+# === 3. 實驗與暫存區：內容不進 git，但保留資料夾結構 ===
+/sandbox/*
+!/sandbox/.gitkeep
+
+# === 4. 作業系統與 IDE 雜訊 ===
+.DS_Store
+.vscode/
+.idea/

@@ -1,0 +1,7 @@
+---
+description: 交接記憶庫規則，每次 Agent 任務都要套用
+alwaysApply: true
+---
+# 交接規則
+開始前讀 docs/.ai/architecture.md 與 session_logs/_LATEST.md。
+結束前依 .agents/rules.md 第 4 節新增交接日誌並更新 _LATEST.md。
