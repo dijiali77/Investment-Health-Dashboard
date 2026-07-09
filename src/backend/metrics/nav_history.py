@@ -13,9 +13,10 @@ import pandas as pd
 from src.backend.ledger.domain_models import (
     FinancialEvent,
     SecurityTradeEvent,
+    DividendEvent,
     EventType,
 )
-from src.backend.portfolio_engine import PortfolioEngine
+from src.backend.portfolio_engine import PortfolioEngine, DividendReceivable
 from src.backend.market_data.locf_operator import apply_locf
 
 
@@ -129,6 +130,21 @@ class NavHistoryGenerator:
                     # 更新現金餘額
                     if isinstance(evt, SecurityTradeEvent):
                         cash_balance += evt.cash_impact
+                    elif isinstance(evt, DividendEvent):
+                        # 第二階段（發放日）：應收股利銷帳，現金增加
+                        if (
+                            evt.ex_dividend_date is not None
+                            and evt.event_date != evt.ex_dividend_date
+                        ):
+                            # 尋找對應的已銷帳應收股利
+                            for dr in self.engine.dividend_receivables:
+                                if (
+                                    dr.stock_id == evt.stock_id
+                                    and dr.ex_dividend_date == evt.ex_dividend_date
+                                    and dr.is_settled
+                                ):
+                                    cash_balance += dr.net_amount
+                                    break
 
             # 2. 計算當日市值
             total_market_value = 0.0

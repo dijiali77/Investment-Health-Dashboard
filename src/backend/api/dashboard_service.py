@@ -6,13 +6,13 @@ DashboardService（儀表板整合服務）
 2. 初始化 Ledger 與事件排序
 3. 驅動 PortfolioEngine 處理事件
 4. 結合 MarketData（LOCF 補值）
-5. 調用 Metrics 算子（UnrealizedPnl、AssetAllocation、NavHistory）
+5. 透過 Metric DAG 引擎驅動所有指標計算
 6. 將整個管線（Pipeline）串聯起來，提供統一的查詢介面。
 """
 
 from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -28,6 +28,13 @@ from src.backend.metrics import (
     NavHistoryGenerator,
 )
 from src.backend.market_data.locf_operator import apply_locf
+from src.backend.analytics import (
+    MetricRegistry,
+    DAGResolver,
+    MetricsBundle,
+    HealthScoreCalculator,
+    HealthScoreResult,
+)
 
 
 class DashboardService:
@@ -36,7 +43,7 @@ class DashboardService:
 
     封裝完整的投資組合分析管線：
     CSV 載入 → 事件轉換 → 事件排序 → PortfolioEngine 處理
-    → Metrics 計算 → 格式化輸出
+    → Metrics 計算（DAG 引擎驅動）→ 格式化輸出
 
     Attributes
     ----------
@@ -48,6 +55,10 @@ class DashboardService:
         各股票的市場資料（原始未補值）。
     initial_cash : float
         期初現金餘額。
+    registry : MetricRegistry
+        DAG 指標註冊表。
+    resolver : DAGResolver
+        DAG 拓撲排序執行引擎。
     """
 
     def __init__(self):
@@ -56,6 +67,185 @@ class DashboardService:
         self.market_data: Dict[str, pd.DataFrame] = {}
         self.initial_cash: float = 0.0
         self._loaded: bool = False
+
+        # DAG 引擎初始化
+        self.registry = MetricRegistry()
+        self.resolver = DAGResolver()
+        self._register_default_metrics()
+
+    def _register_default_metrics(self) -> None:
+        """註冊預設的 DAG 指標。"""
+        # 根節點：外部輸入
+        self.registry.register(
+            "RAW_INPUTS", "原始輸入資料（engine, events, market_data 等）",
+            [],
+            lambda ctx: {
+                "engine": ctx.get("engine"),
+                "events": ctx.get("events"),
+                "market_data": ctx.get("market_data"),
+                "initial_cash": ctx.get("initial_cash", 0.0),
+                "target_date": ctx.get("target_date"),
+                "price_col": ctx.get("price_col", "adj_close"),
+            },
+        )
+
+        # 未實現損益
+        self.registry.register(
+            "UNREALIZED_PNL", "未實現損益",
+            ["RAW_INPUTS"],
+            lambda ctx: self._compute_unrealized_pnl(ctx),
+        )
+
+        # 已實現損益摘要
+        self.registry.register(
+            "REALIZED_PNL", "已實現損益摘要",
+            ["RAW_INPUTS"],
+            lambda ctx: self._compute_realized_pnl(ctx),
+        )
+
+        # 資產配置
+        self.registry.register(
+            "ALLOCATION", "資產配置權重",
+            ["RAW_INPUTS"],
+            lambda ctx: self._compute_allocation(ctx),
+        )
+
+        # 現金餘額
+        self.registry.register(
+            "CASH_BALANCE", "現金餘額",
+            ["RAW_INPUTS"],
+            lambda ctx: self._compute_cash_balance(ctx),
+        )
+
+        # 總資產淨值（NAV）
+        self.registry.register(
+            "NAV_SUMMARY", "總資產淨值摘要",
+            ["UNREALIZED_PNL", "CASH_BALANCE"],
+            lambda ctx: self._compute_nav_summary(ctx),
+        )
+
+        # 健康評分
+        self.registry.register(
+            "HEALTH_SCORE", "投資組合健康評分",
+            ["ALLOCATION", "CASH_BALANCE", "REALIZED_PNL", "RAW_INPUTS"],
+            lambda ctx: self._compute_health_score(ctx),
+        )
+
+    # ── DAG 計算函數 ──────────────────────────────────────────────
+
+    def _compute_unrealized_pnl(self, ctx: Dict[str, Any]) -> Dict:
+        """計算未實現損益。"""
+        engine = ctx["engine"]
+        market_data = ctx["market_data"]
+        target_date = ctx.get("target_date")
+        price_col = ctx.get("price_col", "adj_close")
+
+        calc = UnrealizedPnlCalculator(engine)
+        return calc.calculate(
+            market_data,
+            target_date=target_date,
+            price_col=price_col,
+        )
+
+    def _compute_realized_pnl(self, ctx: Dict[str, Any]) -> Dict:
+        """計算已實現損益摘要。"""
+        engine = ctx["engine"]
+        return engine.get_realized_pnl_summary()
+
+    def _compute_allocation(self, ctx: Dict[str, Any]) -> Dict:
+        """計算資產配置。"""
+        engine = ctx["engine"]
+        market_data = ctx["market_data"]
+        target_date = ctx.get("target_date")
+        price_col = ctx.get("price_col", "adj_close")
+
+        calc = AssetAllocationCalculator(engine)
+        return calc.calculate(
+            market_data,
+            target_date=target_date,
+            price_col=price_col,
+        )
+
+    def _compute_cash_balance(self, ctx: Dict[str, Any]) -> float:
+        """計算現金餘額。"""
+        return self._calculate_cash_balance(ctx.get("target_date"))
+
+    def _compute_nav_summary(self, ctx: Dict[str, Any]) -> Dict:
+        """計算總資產淨值摘要。"""
+        pnl_result = ctx["UNREALIZED_PNL"]
+        cash_balance = ctx["CASH_BALANCE"]
+
+        total_nav = pnl_result["total_market_value"] + cash_balance
+
+        initial_nav = ctx.get("initial_cash", 0.0)
+        total_return_pct = (
+            float(round(((total_nav - initial_nav) / initial_nav) * 100, 2))
+            if initial_nav > 0
+            else 0.0
+        )
+
+        return {
+            "total_market_value": pnl_result["total_market_value"],
+            "cash_balance": float(round(cash_balance, 2)),
+            "total_nav": float(round(total_nav, 2)),
+            "unrealized_pnl": pnl_result["total_unrealized_pnl"],
+            "total_return_pct": float(total_return_pct),
+        }
+
+    def _compute_health_score(self, ctx: Dict[str, Any]) -> Dict:
+        """計算投資組合健康評分。"""
+        alloc_result = ctx["ALLOCATION"]
+        cash_balance = ctx["CASH_BALANCE"]
+        realized_pnl = ctx["REALIZED_PNL"]
+        engine = ctx["engine"]
+
+        # 準備 positions（含 weight_pct）
+        positions = {}
+        for a in alloc_result.get("allocations", []):
+            positions[a["stock_id"]] = {
+                "weight_pct": a["weight_pct"],
+                "market_value": a["market_value"],
+            }
+
+        total_nav = (
+            alloc_result["total_market_value"] + cash_balance
+        )
+        cash_ratio = (
+            cash_balance / total_nav if total_nav > 0 else 0.0
+        )
+
+        num_stocks = len(alloc_result.get("allocations", []))
+        trade_count = realized_pnl.get("trade_count", 0)
+        total_trades = trade_count  # 簡化：使用已實現損益的交易次數
+
+        # 計算週轉率（簡化版）
+        total_cost = sum(
+            p.get("market_value", 0) for p in positions.values()
+        )
+        turnover_rate = (
+            abs(realized_pnl.get("total_realized_pnl", 0)) / max(total_cost, 1)
+            if total_cost > 0
+            else 0.0
+        )
+
+        # 總報酬率
+        total_return_pct = ctx.get("NAV_SUMMARY", {}).get(
+            "total_return_pct", 0.0
+        )
+
+        calculator = HealthScoreCalculator()
+        result = calculator.calculate(
+            positions=positions,
+            cash_ratio=cash_ratio,
+            turnover_rate=turnover_rate,
+            total_return_pct=total_return_pct,
+            num_stocks=num_stocks,
+            trade_count=trade_count,
+            total_trades=total_trades,
+            calculation_date=ctx.get("target_date"),
+        )
+
+        return result.to_dict()
 
     # ── 管線初始化 ────────────────────────────────────────────────
 
@@ -164,7 +354,7 @@ class DashboardService:
 
         self._loaded = True
 
-    # ── 查詢介面 ──────────────────────────────────────────────────
+    # ── 查詢介面（DAG 驅動）───────────────────────────────────────
 
     def get_summary(
         self,
@@ -173,7 +363,7 @@ class DashboardService:
         price_col: str = "adj_close",
     ) -> Dict:
         """
-        取得儀表板摘要資訊。
+        取得儀表板摘要資訊（由 DAG 引擎驅動）。
 
         Parameters
         ----------
@@ -193,52 +383,42 @@ class DashboardService:
             - realized_pnl: 已實現總損益
             - total_return_pct: 總報酬率（%）
             - allocation: 最新資產配置比例
+            - health_score: 投資組合健康評分
             - calculation_date: 計算日期
         """
         self._ensure_loaded()
 
-        # 計算未實現損益
-        pnl_calc = UnrealizedPnlCalculator(self.engine)
-        pnl_result = pnl_calc.calculate(
-            self.market_data,
-            target_date=target_date,
-            price_col=price_col,
+        # 透過 DAG 引擎計算
+        bundle = self.resolver.resolve(
+            self.registry,
+            inputs={
+                "engine": self.engine,
+                "events": self.events,
+                "market_data": self.market_data,
+                "initial_cash": self.initial_cash,
+                "target_date": target_date,
+                "price_col": price_col,
+            },
         )
 
-        # 計算已實現損益
-        realized_summary = self.engine.get_realized_pnl_summary()
-        total_realized_pnl = realized_summary["total_realized_pnl"]
-
-        # 計算資產配置
-        alloc_calc = AssetAllocationCalculator(self.engine)
-        alloc_result = alloc_calc.calculate(
-            self.market_data,
-            target_date=target_date,
-            price_col=price_col,
-        )
-
-        # 計算現金餘額
-        cash_balance = self._calculate_cash_balance(target_date)
-
-        # 總資產淨值
-        total_nav = pnl_result["total_market_value"] + cash_balance
-
-        # 總報酬率（基於期初淨值）
-        initial_nav = self.initial_cash
-        total_return_pct = (
-            float(round(((total_nav - initial_nav) / initial_nav) * 100, 2))
-            if initial_nav > 0
-            else 0.0
-        )
+        nav_summary = bundle.get("NAV_SUMMARY", {})
+        realized_pnl = bundle.get("REALIZED_PNL", {})
+        alloc_result = bundle.get("ALLOCATION", {})
+        health_score = bundle.get("HEALTH_SCORE", {})
 
         return {
-            "total_market_value": pnl_result["total_market_value"],
-            "cash_balance": float(round(cash_balance, 2)),
-            "total_nav": float(round(total_nav, 2)),
-            "unrealized_pnl": pnl_result["total_unrealized_pnl"],
-            "realized_pnl": float(round(total_realized_pnl, 2)),
-            "total_return_pct": float(total_return_pct),
-            "allocation": alloc_result["allocations"],
+            "total_market_value": nav_summary.get(
+                "total_market_value", 0.0
+            ),
+            "cash_balance": nav_summary.get("cash_balance", 0.0),
+            "total_nav": nav_summary.get("total_nav", 0.0),
+            "unrealized_pnl": nav_summary.get("unrealized_pnl", 0.0),
+            "realized_pnl": float(
+                round(realized_pnl.get("total_realized_pnl", 0), 2)
+            ),
+            "total_return_pct": nav_summary.get("total_return_pct", 0.0),
+            "allocation": alloc_result.get("allocations", []),
+            "health_score": health_score,
             "calculation_date": (
                 target_date.isoformat() if target_date else None
             ),
@@ -400,6 +580,9 @@ class DashboardService:
 
         從期初現金開始，累計所有事件的 cash_impact。
         若指定 target_date，只計算該日期之前的事件。
+
+        注意：此處回傳的是「實際現金餘額」，不包含應收股利。
+        應收股利需透過 _calculate_dividend_receivable() 另行計算。
         """
         balance = self.initial_cash
         for evt in self.events:
@@ -407,6 +590,35 @@ class DashboardService:
                 break
             balance += evt.cash_impact
         return balance
+
+    def _calculate_dividend_receivable(
+        self,
+        target_date: Optional[date] = None,
+    ) -> float:
+        """
+        計算截至指定日期的未銷帳應收股利總額。
+
+        從 PortfolioEngine 的 dividend_receivables 中，
+        篩選出尚未銷帳（is_settled=False）且除權息日 <= target_date 的記錄。
+
+        Parameters
+        ----------
+        target_date : Optional[date], default None
+            目標計算日期。若為 None，使用所有未銷帳記錄。
+
+        Returns
+        -------
+        float
+            未銷帳應收股利總額。
+        """
+        total_receivable = 0.0
+        for dr in self.engine.dividend_receivables:
+            if dr.is_settled:
+                continue
+            if target_date is not None and dr.ex_dividend_date > target_date:
+                continue
+            total_receivable += dr.net_amount
+        return round(total_receivable, 2)
 
 
 def _safe_float(value) -> float:

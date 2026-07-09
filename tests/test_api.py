@@ -140,11 +140,11 @@ class TestDashboardService:
         service = _create_initialized_service()
         result = service.get_summary()
 
-        # 驗證鍵值存在
+        # 驗證鍵值存在（含 health_score）
         expected_keys = {
             "total_market_value", "cash_balance", "total_nav",
             "unrealized_pnl", "realized_pnl", "total_return_pct",
-            "allocation", "calculation_date",
+            "allocation", "health_score", "calculation_date",
         }
         assert expected_keys.issubset(result.keys())
 
