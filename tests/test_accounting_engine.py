@@ -13,7 +13,7 @@ from typing import Dict, List
 import pandas as pd
 import pytest
 
-from src.backend.ledger.domain_models import (
+from src.ledger.domain_models import (
     DividendEvent,
     EventType,
     FinancialEvent,
@@ -21,12 +21,10 @@ from src.backend.ledger.domain_models import (
     TradeCategory,
     Market,
 )
-from src.backend.portfolio_engine import (
-    PortfolioEngine,
-    DividendReceivable,
-)
-from src.backend.metrics.nav_history import NavHistoryGenerator
-from src.backend.api.dashboard_service import DashboardService
+from src.portfolio import PortfolioEngine
+from src.accounting import DividendReceivable
+from src.metrics.nav_history import NavHistoryGenerator
+from src.api.dashboard_service import DashboardService
 
 
 # =========================================================================

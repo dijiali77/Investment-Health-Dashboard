@@ -24,10 +24,10 @@ from typing import Dict, List
 import pandas as pd
 from fastapi.testclient import TestClient
 
-from src.backend.api.dashboard_service import DashboardService
-from src.backend.api.routes import set_service
-from src.backend.api.main import app
-from src.backend.ledger.domain_models import (
+from src.api.dashboard_service import DashboardService
+from src.api.routes import set_service
+from src.api.main import app
+from src.ledger.domain_models import (
     SecurityTradeEvent, EventType, TradeCategory, Market,
 )
 

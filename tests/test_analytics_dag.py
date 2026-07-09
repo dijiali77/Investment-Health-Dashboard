@@ -14,7 +14,7 @@ from typing import Any, Dict, List
 import pandas as pd
 import pytest
 
-from src.backend.analytics import (
+from src.analytics import (
     MetricRegistry,
     MetricDefinition,
     DAGResolver,
@@ -23,8 +23,8 @@ from src.backend.analytics import (
     HealthScoreCalculator,
     HealthScoreResult,
 )
-from src.backend.api.dashboard_service import DashboardService
-from src.backend.ledger.domain_models import (
+from src.api.dashboard_service import DashboardService
+from src.ledger.domain_models import (
     SecurityTradeEvent, EventType, TradeCategory, Market,
 )
 
