@@ -1,7 +1,7 @@
 ---
-latest: session_logs/004-phase3-portfolio-engine.md
-previous: session_logs/003-phase2-market-data-complete.md
-updated_at: 2026-07-09T09:29:00+08:00
+latest: session_logs/005-phase4-metrics-engine.md
+previous: session_logs/004-phase3-portfolio-engine.md
+updated_at: 2026-07-09T09:33:00+08:00
 updated_by: Cline (backend developer)
 ---
 
