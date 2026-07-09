@@ -1,7 +1,7 @@
 import pytest
 import warnings
 from datetime import date
-from src.portfolio.fifo_engine import apply_dilution_operator, FifoLot, ERR012_WARNING
+from src.backend.portfolio_engine.fifo_engine import apply_dilution_operator, FifoLot, ERR012_WARNING
 
 def test_apply_dilution_operator_standard_dividend():
     # 測試正常股票股利（配股），股數增加，單位成本降低
@@ -98,3 +98,55 @@ def test_apply_dilution_operator_cost_conservation_warning():
         updated_lots = apply_dilution_operator(open_lots, ratio=0.1)
 
     assert len(updated_lots) == 0
+
+from src.backend.portfolio_engine.fifo_engine import FifoEngine
+
+def test_fifo_engine_buy_and_sell():
+    engine = FifoEngine()
+
+    # 買入第一批 1000 股，單價 100
+    lot1 = FifoLot(
+        lot_id="L1", stock_id="2330.TW", open_date=date(2023, 1, 1),
+        open_event_id="EVT1", quantity=1000, unit_cost=100.0
+    )
+    engine.process_buy(lot1)
+
+    # 買入第二批 2000 股，單價 150
+    lot2 = FifoLot(
+        lot_id="L2", stock_id="2330.TW", open_date=date(2023, 2, 1),
+        open_event_id="EVT2", quantity=2000, unit_cost=150.0
+    )
+    engine.process_buy(lot2)
+
+    # 驗證庫存
+    assert len(engine.portfolios["2330.TW"]) == 2
+
+    # 賣出 1500 股，賣價 200
+    # 預期：
+    # 消耗 lot1 全部 (1000 股)，實現損益 = (200 - 100) * 1000 = 100000
+    # 消耗 lot2 部分 (500 股)，實現損益 = (200 - 150) * 500 = 25000
+    # 總實現損益本筆 = 125000
+    pnl = engine.process_sell("2330.TW", sell_qty=1500, sell_price=200.0)
+
+    assert pnl == 125000.0
+    assert engine.realized_pnl == 125000.0
+
+    # 驗證剩餘 Lot
+    queue = engine.portfolios["2330.TW"]
+    assert len(queue) == 1
+    remaining_lot = queue[0]
+    assert remaining_lot.lot_id == "L2"
+    assert remaining_lot.quantity == 1500  # 2000 - 500
+    assert remaining_lot.unit_cost == 150.0
+
+def test_fifo_engine_insufficient_shares():
+    engine = FifoEngine()
+    lot1 = FifoLot(
+        lot_id="L1", stock_id="2330.TW", open_date=date(2023, 1, 1),
+        open_event_id="EVT1", quantity=1000, unit_cost=100.0
+    )
+    engine.process_buy(lot1)
+
+    # 嘗試賣出 1500 股，超過庫存
+    with pytest.raises(ValueError, match="Insufficient shares for 2330.TW. Short by 500 shares."):
+        engine.process_sell("2330.TW", sell_qty=1500, sell_price=200.0)

@@ -1,7 +1,7 @@
 ---
-latest: session_logs/002-phase2-market-data.md
-previous: session_logs/001-phase1-ledger-skeleton.md
-updated_at: 2026-07-09T00:42:41+00:00
+latest: session_logs/003-phase3-portfolio.md
+previous: session_logs/002-phase2-market-data.md
+updated_at: 2026-07-09T01:34:11+00:00
 updated_by: Jules (backend developer)
 ---
 
